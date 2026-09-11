@@ -114,8 +114,14 @@ const donePayload = await new Promise((resolve) => {
     if (sent >= totalChunks && acked >= total) ws.send(encodeFT(OP.Done, sessionId, 0, new Uint8Array(0)))
   }
 
+  // mediaType 必须与后端 FileTransferHandler.MediaRules 一致，否则会被正确的白名单校验拒绝
+  const ext = (fileName.match(/\.[^.]+$/) || [''])[0].toLowerCase()
+  const mediaType =
+    ['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext) ? 'image' :
+    ['.mp4', '.webm', '.mov'].includes(ext) ? 'video' :
+    ['.mp3', '.wav', '.ogg', '.m4a'].includes(ext) ? 'audio' : 'file'
   const meta = new TextEncoder().encode(JSON.stringify({
-    fileName, mediaType: /\.(png|jpg|jpeg|gif|webp)$/i.test(fileName) ? 'image' : 'file',
+    fileName, mediaType,
     totalSize: total, roomId: 'public'
   }))
   ws.send(encodeFT(OP.Start, 0, 0, meta))
