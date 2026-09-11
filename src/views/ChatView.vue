@@ -25,6 +25,15 @@ function resolveUrl(path) {
   return path.startsWith('http') ? path : API_BASE + path
 }
 
+/**
+ * 解析缩略图 URL。
+ * 只有图片类型才回退用原图当缩略图；视频/音频/文件没有真实缩略图时返回 null，
+ * 否则浏览器会把整个大文件当作海报/缩略图去下载，白白浪费带宽。
+ */
+function resolveThumb(thumbPath, mediaPath, kind) {
+  return resolveUrl(thumbPath) || (kind === 'image' ? resolveUrl(mediaPath) : null)
+}
+
 const nickname = ref(sessionStorage.getItem('nickname') || '')
 const publicId = ref(sessionStorage.getItem('publicId') || '')
 const myAvatarUrl = ref(resolveUrl(sessionStorage.getItem('avatarUrl')))
@@ -60,8 +69,16 @@ const contextMenuPos = ref({ x: 0, y: 0 })
 async function doRecall(msg) {
   // 撤回必须用后端真实消息 Id（msg.backendId）；本地插入的消息用 DONE 返回的 messageId
   const id = msg?.backendId || msg?.id
-  try { await recallMessage(id); contextMenuMsg.value = null }
-  catch (e) { alert('撤回失败') }
+  const prevRecalled = msg?.recalled
+  try {
+    // 本地乐观更新：点完立刻看到「已撤回」，不等广播来回（失败会回滚）
+    if (msg) msg.recalled = true
+    await recallMessage(id)
+    contextMenuMsg.value = null
+  } catch (e) {
+    if (msg) msg.recalled = prevRecalled
+    alert('撤回失败')
+  }
 }
 
 async function doMute(userId) {
@@ -166,8 +183,60 @@ const FT_MAGIC = 0xAB
 const FT_OP = { Start: 1, Chunk: 2, Ack: 3, Done: 4, Cancel: 5, Error: 6, Resume: 7 }
 const FT_CHUNK_SIZE = 256 * 1024 // 每块 256KB
 
+// 媒体类型规则（与后端 FileTransferHandler.MediaRules 保持一致）：扩展名白名单 + 大小上限
+const MEDIA_RULES = {
+  image: { ext: ['.jpg', '.jpeg', '.png', '.gif', '.webp'], max: 50 * 1024 * 1024, label: '图片' },
+  video: { ext: ['.mp4', '.webm', '.mov'], max: 200 * 1024 * 1024, label: '视频' },
+  audio: { ext: ['.mp3', '.wav', '.ogg', '.m4a'], max: 50 * 1024 * 1024, label: '音频' },
+  file: {
+    ext: ['.pdf', '.zip', '.7z', '.rar', '.txt', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'],
+    max: 100 * 1024 * 1024,
+    label: '文件'
+  }
+}
+
+/** 文件扩展名（含点，小写） */
+function fileExt(name) {
+  return (name.match(/\.[^.]+$/) || [''])[0].toLowerCase()
+}
+
+/** 根据扩展名判断媒体类型；识别不出则归入 file（由后端做最终白名单校验） */
+function detectMediaType(file) {
+  const ext = fileExt(file.name)
+  if (MEDIA_RULES.image.ext.includes(ext)) return 'image'
+  if (MEDIA_RULES.video.ext.includes(ext)) return 'video'
+  if (MEDIA_RULES.audio.ext.includes(ext)) return 'audio'
+  return 'file'
+}
+
+/** 字节 → 可读大小 */
+function fmtSize(bytes) {
+  if (bytes === undefined || bytes === null) return ''
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+}
+
+/** 文件卡片图标 */
+function fileIcon(name) {
+  const ext = fileExt(name)
+  if (ext === '.pdf') return '📕'
+  if (['.zip', '.7z', '.rar'].includes(ext)) return '🗜'
+  if (['.doc', '.docx'].includes(ext)) return '📘'
+  if (['.xls', '.xlsx'].includes(ext)) return '📗'
+  if (['.ppt', '.pptx'].includes(ext)) return '📙'
+  if (ext === '.txt') return '📃'
+  return '📄'
+}
+
+/** 消息的媒体种类（兼容早期没有 mediaType 字段的图片消息，默认按图片渲染） */
+function mediaKind(msg) {
+  if (msg.mediaType) return msg.mediaType
+  return msg.mediaUrl ? 'image' : ''
+}
+
 // 当前上传状态（非响应式，只供发送逻辑内部使用）
-let pendingUpload = null // { file, sessionId, totalChunks, sent, roomId }
+let pendingUpload = null // { file, mediaType, sessionId, totalChunks, sent, acked, roomId }
 
 /** 字符串 → Uint8Array */
 function str2ab(str) {
@@ -203,22 +272,35 @@ function parseFT(data) {
 
 function triggerImageInput() { imageFileInput.value?.click() }
 
-/** 选择图片后开始分块上传 */
+/** 选择文件后开始分块上传（图片/视频/音频/文档统一走同一套分块协议） */
 async function onImageSelected(e) {
   const file = e.target.files?.[0]
   e.target.value = ''
   if (!file) return
-  // 校验类型与大小
-  if (!/image\/(jpeg|png|gif|webp)/.test(file.type)) { alert('仅支持 jpg/png/gif/webp 图片'); return }
-  if (file.size > 50 * 1024 * 1024) { alert('图片不能超过 50MB'); return }
+
+  // 按类型规则校验：类型 → 扩展名白名单 → 大小上限
+  const mediaType = detectMediaType(file)
+  const rule = MEDIA_RULES[mediaType]
+  const ext = fileExt(file.name)
+  if (!rule.ext.includes(ext)) {
+    alert(`不支持的${rule.label}格式：${ext || file.name}\n允许：${rule.ext.join(' ')}`)
+    return
+  }
+  if (file.size > rule.max) {
+    alert(`${rule.label}不能超过 ${rule.max / 1024 / 1024}MB`)
+    return
+  }
   if (!socket || socket.readyState !== WebSocket.OPEN) { alert('连接未就绪'); return }
 
   // 重置上传状态
   pendingUpload = {
     file,
+    mediaType,
     sessionId: 0,
     totalChunks: Math.ceil(file.size / FT_CHUNK_SIZE),
-    sent: 0,
+    sent: 0,          // 已发出的块数
+    acked: 0,         // 已确认字节数（服务端累积确认）
+    doneSent: false,  // 是否已发过 DONE（防重复）
     roomId: currentRoom.value.id
   }
   uploading.value = true
@@ -228,7 +310,7 @@ async function onImageSelected(e) {
   // 发送 START 帧（SessionId 为 0，等待服务端 ACK 分配）
   const meta = str2ab(JSON.stringify({
     fileName: file.name,
-    mediaType: 'image',
+    mediaType,
     totalSize: file.size,
     roomId: currentRoom.value.id
   }))
@@ -244,46 +326,67 @@ function resumeUpload() {
   socket.send(encodeFT(FT_OP.Resume, up.sessionId, 0, new Uint8Array(0)))
 }
 
-let sendingChunk = false // sendNextChunk 重入锁，防止并发调用导致跳块
+const FT_WINDOW = 8            // 滑动窗口：最多允许 8 块在途（不必等每块 ACK）→ 吞吐 ≈ WINDOW × 块大小 / RTT
+const STALL_TIMEOUT_MS = 15000 // 15s 内确认进度无推进 → 判定停滞，回退重发
 
-const CHUNK_TIMEOUT_MS = 15000 // 单块 15s 内未收到 ACK 则视为超时，自动重传
 let chunkRetryTimer = null
+let pumping = false            // pump 串行锁：保证块按序号递增读取+发送
 
 function clearChunkRetryTimer() {
   if (chunkRetryTimer) { clearTimeout(chunkRetryTimer); chunkRetryTimer = null }
 }
 
-/** 发送下一块数据（收到 ACK 后调用，形成简单滑动窗口） */
-async function sendNextChunk() {
-  if (sendingChunk) return
+/** 停滞监控：确认进度长时间无推进 → 回退到已确认位置重发整个窗口 */
+function armStallTimer() {
+  clearChunkRetryTimer()
+  chunkRetryTimer = setTimeout(() => {
+    const up = pendingUpload
+    if (!up) return
+    if (pumping) { armStallTimer(); return }          // 仍在发送，重新计时
+    const ackedChunks = Math.floor(up.acked / FT_CHUNK_SIZE)
+    if (up.sent > ackedChunks) up.sent = ackedChunks  // 回退未确认的块
+    pump()
+  }, STALL_TIMEOUT_MS)
+}
+
+/**
+ * 抽水机：在滑动窗口允许范围内，串行读取并发送数据块。
+ *
+ * 关键：读取与发送必须串行（await 读完再 send），保证 WebSocket 上的块
+ * 严格按序号递增到达 —— 服务端是按到达顺序顺序写入的，乱序会写坏文件。
+ * 提速靠的是“窗口内多块在途（不等 ACK）”，而不是并发乱序发送。
+ */
+async function pump() {
+  if (pumping) return
   const up = pendingUpload
   if (!up || !socket || socket.readyState !== WebSocket.OPEN) return
-  sendingChunk = true
+  pumping = true
   try {
-    clearChunkRetryTimer()
-    if (up.sent >= up.totalChunks) {
-      // 所有块已发完 → DONE
-      socket.send(encodeFT(FT_OP.Done, up.sessionId, 0, new Uint8Array(0)))
-      return
-    }
-    const idx = up.sent
-    const start = idx * FT_CHUNK_SIZE
-    const end = Math.min(start + FT_CHUNK_SIZE, up.file.size)
-    const blob = up.file.slice(start, end)
-    const buf = await blob.arrayBuffer()
-    socket.send(encodeFT(FT_OP.Chunk, up.sessionId, idx, new Uint8Array(buf)))
-    up.sent = idx + 1
+    while (up.sent < up.totalChunks) {
+      const ackedChunks = Math.floor(up.acked / FT_CHUNK_SIZE)
+      if (up.sent - ackedChunks >= FT_WINDOW) break  // 窗口满，等 ACK 腾出额度
 
-    // 块超时重传：发出后 15s 内未收到该块的 ACK（sent 未被推进），则回退重发
-    chunkRetryTimer = setTimeout(() => {
-      const cur = pendingUpload
-      if (cur && cur.sent === idx + 1) {
-        cur.sent = idx // 回退到未确认的块
-        sendNextChunk()
-      }
-    }, CHUNK_TIMEOUT_MS)
+      const idx = up.sent
+      up.sent++
+      const start = idx * FT_CHUNK_SIZE
+      const end = Math.min(start + FT_CHUNK_SIZE, up.file.size)
+      const buf = await up.file.slice(start, end).arrayBuffer()
+
+      // 读取期间可能被取消/切换，或该块已被 ACK 覆盖（停滞回退）
+      if (pendingUpload !== up || !socket || socket.readyState !== WebSocket.OPEN) return
+      if (idx < Math.floor(up.acked / FT_CHUNK_SIZE)) continue
+
+      socket.send(encodeFT(FT_OP.Chunk, up.sessionId, idx, new Uint8Array(buf)))
+    }
+
+    // 全部发出且全部确认 → 发送 DONE（只发一次；用字节数判断，最后一块通常不满）
+    if (!up.doneSent && up.sent >= up.totalChunks && up.acked >= up.file.size) {
+      up.doneSent = true
+      clearChunkRetryTimer()
+      socket.send(encodeFT(FT_OP.Done, up.sessionId, 0, new Uint8Array(0)))
+    }
   } finally {
-    sendingChunk = false
+    pumping = false
   }
 }
 
@@ -302,21 +405,28 @@ function handleFTFrame(frame) {
   const up = pendingUpload
   switch (frame.op) {
     case FT_OP.Ack:
-      if (up && up.resuming) {
-        // Resume 的 ACK：seq 携带已收字节数 → 计算下一个块索引，从断点继续
-        up.resuming = false
-        const receivedBytes = frame.seq
-        up.sent = Math.floor(receivedBytes / FT_CHUNK_SIZE)
-        uploadProgress.value = (receivedBytes / up.file.size) * 100
-        sendNextChunk()
-      } else if (up && up.sessionId === 0) {
-        // START 的 ACK：拿到服务端分配的 SessionId，开始发块
+      if (!up) break
+      if (up.sessionId === 0) {
+        // START 的 ACK：拿到服务端分配的 SessionId，开始按窗口灌水
         up.sessionId = frame.sessionId
-        sendNextChunk()
-      } else if (up) {
-        // 进度 ACK：seq 携带已收字节数
+        armStallTimer()
+        pump()
+      } else if (up.resuming) {
+        // Resume 的 ACK：seq = 服务端已收字节 → 回退到该位置重发
+        up.resuming = false
+        up.acked = frame.seq
+        up.sent = Math.floor(frame.seq / FT_CHUNK_SIZE)
         uploadProgress.value = (frame.seq / up.file.size) * 100
-        sendNextChunk()
+        armStallTimer()
+        pump()
+      } else {
+        // 累积确认：只前进不回退（seq = 服务端已收字节）
+        if (frame.seq > up.acked) {
+          up.acked = frame.seq
+          uploadProgress.value = (up.acked / up.file.size) * 100
+          armStallTimer()
+        }
+        pump()
       }
       break
     case FT_OP.Done:
@@ -343,7 +453,7 @@ function finishUpload() {
   uploadFileName.value = ''
 }
 
-/** 本地立即插入一条图片消息（发送者本人即时可见，不等广播回传） */
+/** 本地立即插入一条媒体消息（发送者本人即时可见，不等广播回传） */
 function addLocalImageMessage(meta) {
   // 若广播已先到达并插入同一条，这里跳过，避免重复显示
   const mediaUrl = resolveUrl(meta.mediaUrl || meta.MediaUrl)
@@ -359,8 +469,9 @@ function addLocalImageMessage(meta) {
     roomId: pendingUpload?.roomId || currentRoom.value.id,
     time: formatTime(new Date().toISOString()),
     isSelf: true,
+    mediaType: meta.mediaType || meta.MediaType || 'file',
     mediaUrl,
-    mediaThumbUrl: resolveUrl(meta.mediaThumbUrl || meta.MediaThumbUrl) || mediaUrl,
+    mediaThumbUrl: resolveThumb(meta.mediaThumbUrl || meta.MediaThumbUrl, meta.mediaUrl || meta.MediaUrl, meta.mediaType || meta.MediaType || 'file'),
     mediaName: meta.mediaName || meta.MediaName,
     mediaSize: meta.mediaSize || meta.MediaSize
   })
@@ -430,8 +541,11 @@ function connectWebSocket() {
             isSelf: msg.SenderId === publicId.value
           })
           break
-        case 'image': {
-          // 广播的图片消息。发送者本地已立即插入一条（addLocalImageMessage），
+        case 'image':
+        case 'video':
+        case 'audio':
+        case 'file': {
+          // 广播的媒体消息。发送者本地已立即插入一条（addLocalImageMessage），
           // 这里按 mediaUrl 去重，避免自己看到两条。
           const mediaUrl = resolveUrl(msg.MediaUrl)
           const dup = messages.value.find(m => m.mediaUrl && m.mediaUrl === mediaUrl)
@@ -443,8 +557,9 @@ function connectWebSocket() {
             content: msg.Content || '', roomId: msg.TargetUserId || 'public',
             time: formatTime(msg.Timestamp), rawTimestamp: msg.Timestamp,
             avatarUrl: resolveUrl(msg.AvatarUrl),
+            mediaType: msg.MediaType || msg.Type || 'file',
             mediaUrl,
-            mediaThumbUrl: resolveUrl(msg.MediaThumbUrl) || mediaUrl,
+            mediaThumbUrl: resolveThumb(msg.MediaThumbUrl, msg.MediaUrl, msg.MediaType || msg.Type || 'file'),
             mediaName: msg.MediaName,
             mediaSize: msg.MediaSize,
             isSelf: msg.SenderId === publicId.value
@@ -465,8 +580,10 @@ function connectWebSocket() {
         case 'error': console.error("服务器错误:", msg.Message || msg.message); break
         case 'pong': break
         case 'recall':
-          const found = messages.value.find(m => m.id === (msg.MessageId || msg.messageId))
-          if (found) { found.recalled = true; found.content = '[消息已被撤回]' }
+          // ★ 必须用 backendId 匹配：所有消息把后端真实 Message.id 存在 backendId，
+          //   m.id 是本地拼的 `senderId_timestamp`，拿它比 MessageId 永远匹配不上。
+          const found = messages.value.find(m => m.backendId === (msg.MessageId || msg.messageId))
+          if (found) found.recalled = true
           break
         case 'system':
           messages.value.push({
@@ -563,10 +680,12 @@ function addPrivateMessages(data) {
     senderNickname: m.SenderNickname, content: m.Content,
     time: formatTime(m.Timestamp),
     avatarUrl: resolveUrl(m.AvatarUrl),
+    mediaType: m.MediaType || 'file',
     mediaUrl: resolveUrl(m.MediaUrl),
-    mediaThumbUrl: resolveUrl(m.MediaThumbUrl) || resolveUrl(m.MediaUrl),
+    mediaThumbUrl: resolveThumb(m.MediaThumbUrl, m.MediaUrl, m.MediaType || 'file'),
     mediaName: m.MediaName,
     mediaSize: m.MediaSize,
+    recalled: !!m.IsRecalled,
     isSelf: String(m.SenderId) === (publicId?.value || userId?.value || '')
   }))
   const existingIds = new Set(messages.value.map(m => m.id))
@@ -591,10 +710,12 @@ async function loadHistory(groupId, before = null) {
       content: m.Content, roomId: m.TargetUserId || groupId, time: formatTime(m.Timestamp),
       rawTimestamp: m.Timestamp,
       avatarUrl: resolveUrl(m.AvatarUrl),
+      mediaType: m.MediaType || 'file',
       mediaUrl: resolveUrl(m.MediaUrl),
-      mediaThumbUrl: resolveUrl(m.MediaThumbUrl) || resolveUrl(m.MediaUrl),
+      mediaThumbUrl: resolveThumb(m.MediaThumbUrl, m.MediaUrl, m.MediaType || 'file'),
       mediaName: m.MediaName,
       mediaSize: m.MediaSize,
+      recalled: !!m.IsRecalled,
       isSelf: String(m.SenderId) === (publicId?.value || userId?.value || '')
     }))
     if (historyMessages.length < 100) historyDone.value = true
@@ -987,7 +1108,31 @@ function openAdminPanel() {
               <div class="sender-name">{{ msg.senderNickname }}</div>
               <div class="bubble other-bubble" @contextmenu.prevent="openContextMenu($event, msg)">
                 <div v-if="msg.recalled" class="bubble-text">[消息已被撤回]</div>
-                <img v-else-if="msg.mediaUrl" :src="msg.mediaThumbUrl || msg.mediaUrl" class="chat-image" @click="previewImage = msg.mediaUrl" alt="图片" />
+
+                <!-- 图片：显示缩略图，点击看大图 -->
+                <img v-else-if="mediaKind(msg) === 'image' && msg.mediaUrl" :src="msg.mediaThumbUrl || msg.mediaUrl"
+                  class="chat-image" @click="previewImage = msg.mediaUrl" alt="图片" />
+
+                <!-- 视频：内联播放器（海报用缩略图） -->
+                <video v-else-if="mediaKind(msg) === 'video' && msg.mediaUrl" class="chat-video" controls preload="metadata"
+                  :src="msg.mediaUrl" :poster="msg.mediaThumbUrl || undefined"></video>
+
+                <!-- 音频：文件名 + 内联播放器 -->
+                <div v-else-if="mediaKind(msg) === 'audio' && msg.mediaUrl" class="media-audio">
+                  <div class="media-audio-name">🎵 {{ msg.mediaName }}</div>
+                  <audio controls preload="metadata" :src="msg.mediaUrl"></audio>
+                </div>
+
+                <!-- 其他文件：卡片，点击下载 -->
+                <a v-else-if="msg.mediaUrl" class="media-file" :href="msg.mediaUrl" :download="msg.mediaName" target="_blank" rel="noopener">
+                  <span class="media-file-icon">{{ fileIcon(msg.mediaName) }}</span>
+                  <span class="media-file-info">
+                    <span class="media-file-name">{{ msg.mediaName }}</span>
+                    <span class="media-file-size">{{ fmtSize(msg.mediaSize) }}</span>
+                  </span>
+                  <span class="media-file-dl">⬇</span>
+                </a>
+
                 <div v-else class="bubble-text">{{ msg.content }}</div>
               </div>
               <div class="bubble-time">{{ msg.time }}</div>
@@ -1002,7 +1147,31 @@ function openAdminPanel() {
             <div class="bubble-wrapper right">
               <div class="bubble self-bubble" @contextmenu.prevent="openContextMenu($event, msg)">
                 <div v-if="msg.recalled" class="bubble-text">[消息已被撤回]</div>
-                <img v-else-if="msg.mediaUrl" :src="msg.mediaThumbUrl || msg.mediaUrl" class="chat-image" @click="previewImage = msg.mediaUrl" alt="图片" />
+
+                <!-- 图片：显示缩略图，点击看大图 -->
+                <img v-else-if="mediaKind(msg) === 'image' && msg.mediaUrl" :src="msg.mediaThumbUrl || msg.mediaUrl"
+                  class="chat-image" @click="previewImage = msg.mediaUrl" alt="图片" />
+
+                <!-- 视频：内联播放器（海报用缩略图） -->
+                <video v-else-if="mediaKind(msg) === 'video' && msg.mediaUrl" class="chat-video" controls preload="metadata"
+                  :src="msg.mediaUrl" :poster="msg.mediaThumbUrl || undefined"></video>
+
+                <!-- 音频：文件名 + 内联播放器 -->
+                <div v-else-if="mediaKind(msg) === 'audio' && msg.mediaUrl" class="media-audio">
+                  <div class="media-audio-name">🎵 {{ msg.mediaName }}</div>
+                  <audio controls preload="metadata" :src="msg.mediaUrl"></audio>
+                </div>
+
+                <!-- 其他文件：卡片，点击下载 -->
+                <a v-else-if="msg.mediaUrl" class="media-file" :href="msg.mediaUrl" :download="msg.mediaName" target="_blank" rel="noopener">
+                  <span class="media-file-icon">{{ fileIcon(msg.mediaName) }}</span>
+                  <span class="media-file-info">
+                    <span class="media-file-name">{{ msg.mediaName }}</span>
+                    <span class="media-file-size">{{ fmtSize(msg.mediaSize) }}</span>
+                  </span>
+                  <span class="media-file-dl">⬇</span>
+                </a>
+
                 <div v-else class="bubble-text">{{ msg.content }}</div>
               </div>
               <div class="bubble-time right">{{ msg.time }}</div>
@@ -1017,10 +1186,11 @@ function openAdminPanel() {
       </div>
 
       <div class="input-toolbar">
-        <button class="tool-icon-btn" title="发送图片" @click="triggerImageInput">🖼</button>
-        <input ref="imageFileInput" type="file" accept="image/jpeg,image/png,image/gif,image/webp"
+        <button class="tool-icon-btn" title="发送文件（图片/视频/音频/文档）" @click="triggerImageInput">📎</button>
+        <input ref="imageFileInput" type="file"
+          accept=".jpg,.jpeg,.png,.gif,.webp,.mp4,.webm,.mov,.mp3,.wav,.ogg,.m4a,.pdf,.zip,.7z,.rar,.txt,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
           style="display:none" @change="onImageSelected" />
-        <!-- 图片上传进度条 -->
+        <!-- 文件上传进度条 -->
         <div v-if="uploading" class="upload-bar">
           <div class="upload-progress" :style="{ width: uploadProgress + '%' }"></div>
           <span class="upload-text">{{ uploadFileName }} · {{ Math.round(uploadProgress) }}%</span>
@@ -1238,8 +1408,7 @@ function openAdminPanel() {
 </template>
 
 <style scoped>
-.chat-page { display: flex; height: 100vh; background: #f0f2f5; font-family: "Microsoft YaHei","PingFang SC",Arial,sans-serif; overflow: hidden; }
-.sidebar { width: 280px; min-width: 280px; background: #2e2e3a; color: #ccc; display: flex; flex-direction: column; border-right: 1px solid #1e1e28; }
+.chat-page { display: flex; height: 100vh; background: #f0f2f5; font-family: "Microsoft YaHei","PingFang SC",Arial,sans-serif; overflow: hidden; }.sidebar { width: 280px; min-width: 280px; background: #2e2e3a; color: #ccc; display: flex; flex-direction: column; border-right: 1px solid #1e1e28; }
 .sidebar-header { display: flex; align-items: center; gap: 12px; padding: 16px; background: #252532; }
 .user-avatar { width: 40px; height: 40px; border-radius: 50%; background: #667eea; color: white; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: bold; flex-shrink: 0; overflow: hidden; }
 .avatar-img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -1302,6 +1471,21 @@ function openAdminPanel() {
 .upload-progress { position: absolute; left: 0; top: 0; bottom: 0; background: #667eea; opacity: 0.15; transition: width 0.2s; }
 .upload-text { position: relative; font-size: 12px; color: #555; }
 .chat-image { max-width: 280px; max-height: 280px; border-radius: 10px; display: block; cursor: zoom-in; }
+
+/* ====== 通用文件类型渲染 ====== */
+.chat-video { max-width: 320px; max-height: 240px; border-radius: 10px; display: block; background: #000; }
+.media-audio { display: flex; flex-direction: column; gap: 8px; min-width: 220px; }
+.media-audio-name { font-size: 13px; opacity: 0.9; word-break: break-all; }
+.media-audio audio { width: 100%; height: 36px; }
+.media-file { display: flex; align-items: center; gap: 10px; min-width: 200px; max-width: 280px; padding: 4px 2px; text-decoration: none; color: inherit; }
+.media-file-icon { font-size: 28px; flex-shrink: 0; }
+.media-file-info { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.media-file-name { font-size: 13px; font-weight: 500; word-break: break-all; }
+.media-file-size { font-size: 11px; opacity: 0.7; margin-top: 2px; }
+.media-file-dl { font-size: 16px; opacity: 0.7; flex-shrink: 0; }
+.media-file:hover .media-file-dl { opacity: 1; }
+.other-bubble .media-file { color: #333; }
+.other-bubble .media-file-size { color: #888; opacity: 1; }
 .image-preview-box { background: white; border-radius: 12px; padding: 16px; max-width: 90vw; max-height: 90vh; display: flex; flex-direction: column; gap: 12px; }
 .image-preview-box img { max-width: 85vw; max-height: 80vh; object-fit: contain; border-radius: 8px; }
 .chat-box { display: flex; align-items: flex-end; gap: 8px; padding: 8px 24px 16px; background: white; border-top: 1px solid #eee; }
