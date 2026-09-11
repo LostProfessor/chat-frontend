@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { register as registerApi } from '../api'
+import { PreviewOpen, PreviewClose } from '../components/icons'
 
 const router = useRouter()
 
@@ -76,7 +77,8 @@ async function handleRegister() {
             <input v-model="password" :type="showPwd ? 'text' : 'password'" placeholder="至少8位密码" />
             <button type="button" class="pwd-toggle"
               @mousedown="showPwdHandler" @mouseup="hidePwdHandler" @mouseleave="hidePwdHandler">
-              {{ showPwd ? '🙈' : '👁' }}
+              <PreviewClose v-if="showPwd" size="16" />
+              <PreviewOpen v-else size="16" />
             </button>
           </div>
         </div>
@@ -86,7 +88,8 @@ async function handleRegister() {
             <input v-model="confirmPassword" :type="showConfirmPwd ? 'text' : 'password'" placeholder="再次输入密码" />
             <button type="button" class="pwd-toggle"
               @mousedown="showConfirmHandler" @mouseup="hideConfirmHandler" @mouseleave="hideConfirmHandler">
-              {{ showConfirmPwd ? '🙈' : '👁' }}
+              <PreviewClose v-if="showConfirmPwd" size="16" />
+              <PreviewOpen v-else size="16" />
             </button>
           </div>
         </div>
@@ -132,7 +135,7 @@ h1 { text-align: center; color: #333; font-size: 28px; margin-bottom: 4px; }
 }
 .pwd-wrapper:focus-within { border-color: #667eea; }
 .pwd-wrapper input { border: none !important; flex: 1; }
-.pwd-toggle { background: none; border: none; cursor: pointer; padding: 0 12px; font-size: 16px; line-height: 1; user-select: none; }
+.pwd-toggle { background: none; border: none; cursor: pointer; padding: 0 12px; font-size: 16px; line-height: 1; user-select: none; display: inline-flex; align-items: center; }
 .error-msg { color: #e74c3c; font-size: 13px; text-align: center; margin-bottom: 12px; }
 .success-msg { color: #27ae60; font-size: 13px; text-align: center; margin-bottom: 12px; }
 .auth-btn {

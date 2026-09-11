@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { login as loginApi } from '../api'
+import { PreviewOpen, PreviewClose } from '../components/icons'
 
 const router = useRouter()
 
@@ -73,7 +74,8 @@ async function handleLogin() {
             <input v-model="password" :type="showPwd ? 'text' : 'password'" placeholder="请输入密码" />
             <button type="button" class="pwd-toggle"
               @mousedown="showPwdHandler" @mouseup="hidePwdHandler" @mouseleave="hidePwdHandler">
-              {{ showPwd ? '🙈' : '👁' }}
+              <PreviewClose v-if="showPwd" size="16" />
+              <PreviewOpen v-else size="16" />
             </button>
           </div>
         </div>
@@ -177,6 +179,9 @@ h1 {
   font-size: 16px;
   line-height: 1;
   user-select: none;
+  /* 图标对齐：让 IconPark 的 svg 在按钮里垂直居中 */
+  display: inline-flex;
+  align-items: center;
 }
 
 .error-msg {

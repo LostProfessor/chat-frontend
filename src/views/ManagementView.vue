@@ -7,6 +7,7 @@ import {
   resetUserPassword, getAdminStats
 } from '../api'
 import { Line } from 'vue-chartjs'
+import { Dashboard, User, Peoples, Broadcast, Message, Left, Logout } from '../components/icons'
 import {
   Chart as ChartJS,
   CategoryScale, LinearScale, PointElement,
@@ -192,27 +193,27 @@ onBeforeUnmount(() => { if (clockTimer) clearInterval(clockTimer) })
           <span class="user-name">{{ nickname }}</span>
           <span class="badge admin-badge">管理员</span>
         </div>
-        <button class="icon-btn" title="退出登录" @click="logout">⏻</button>
+        <button class="icon-btn" title="退出登录" @click="logout"><Logout size="18" /></button>
       </div>
 
       <nav class="nav-menu">
         <button :class="{ active: activeTab === 'dashboard' }" @click="switchTab('dashboard')">
-          📊 系统面板
+          <Dashboard size="16" /> 系统面板
         </button>
         <button :class="{ active: activeTab === 'users' }" @click="switchTab('users')">
-          👥 用户管理
+          <User size="16" /> 用户管理
         </button>
         <button :class="{ active: activeTab === 'groups' }" @click="switchTab('groups')">
-          📢 群组管理
+          <Peoples size="16" /> 群组管理
         </button>
         <button :class="{ active: activeTab === 'announcement' }" @click="switchTab('announcement')">
-          📣 全服公告
+          <Broadcast size="16" /> 全服公告
         </button>
       </nav>
 
       <div class="sidebar-footer">
-        <router-link to="/chat" class="footer-link">💬 进入聊天室</router-link>
-        <router-link to="/" class="footer-link">← 返回首页</router-link>
+        <router-link to="/chat" class="footer-link"><Message size="14" /> 进入聊天室</router-link>
+        <router-link to="/" class="footer-link"><Left size="14" /> 返回首页</router-link>
       </div>
     </aside>
 
@@ -399,6 +400,8 @@ onBeforeUnmount(() => { if (clockTimer) clearInterval(clockTimer) })
 .icon-btn {
   background: none; border: none; color: #999;
   font-size: 18px; cursor: pointer;
+  /* 图标对齐（IconPark SVG）*/
+  display: inline-flex; align-items: center; justify-content: center; line-height: 0;
 }
 .icon-btn:hover { color: #e74c3c; }
 
@@ -419,6 +422,10 @@ onBeforeUnmount(() => { if (clockTimer) clearInterval(clockTimer) })
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.15s;
+  /* 图标 + 文字横向对齐（IconPark SVG）*/
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .nav-menu button:hover { background: #2a2a3c; color: #eee; }
 .nav-menu button.active { background: #f39c12; color: #fff; }
@@ -434,6 +441,10 @@ onBeforeUnmount(() => { if (clockTimer) clearInterval(clockTimer) })
   color: #888;
   text-decoration: none;
   font-size: 13px;
+  /* 图标 + 文字对齐 */
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .footer-link:hover { color: #f39c12; }
 

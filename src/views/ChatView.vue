@@ -14,6 +14,12 @@ import api, {
   getAdminUsers, deleteUser, getAdminGroups, deleteGroup, setGlobalAnnouncement,
   resetUserPassword
 } from '../api'
+// 图标统一从 ../components/icons 引入（底层是 IconPark），方便以后整体换图标库
+import {
+  SettingTwo, Lightning, Peoples, Message, Search, Mail, Left, Announcement, Close,
+  Paperclip, VolumeMute, Download, MusicOne, Logout,
+  FilePdf, FileZip, FileWord, FileExcel, FilePpt, FileTxt, FileText
+} from '../components/icons'
 
 const router = useRouter()
 
@@ -217,16 +223,16 @@ function fmtSize(bytes) {
   return (bytes / 1024 / 1024).toFixed(1) + ' MB'
 }
 
-/** 文件卡片图标 */
+/** 文件卡片图标（返回图标组件，模板里用 <component :is> 渲染） */
 function fileIcon(name) {
   const ext = fileExt(name)
-  if (ext === '.pdf') return '📕'
-  if (['.zip', '.7z', '.rar'].includes(ext)) return '🗜'
-  if (['.doc', '.docx'].includes(ext)) return '📘'
-  if (['.xls', '.xlsx'].includes(ext)) return '📗'
-  if (['.ppt', '.pptx'].includes(ext)) return '📙'
-  if (ext === '.txt') return '📃'
-  return '📄'
+  if (ext === '.pdf') return FilePdf
+  if (['.zip', '.7z', '.rar'].includes(ext)) return FileZip
+  if (['.doc', '.docx'].includes(ext)) return FileWord
+  if (['.xls', '.xlsx'].includes(ext)) return FileExcel
+  if (['.ppt', '.pptx'].includes(ext)) return FilePpt
+  if (ext === '.txt') return FileTxt
+  return FileText
 }
 
 /** 消息的媒体种类（兼容早期没有 mediaType 字段的图片消息，默认按图片渲染） */
@@ -1018,14 +1024,14 @@ function openAdminPanel() {
             {{ connectionStatus === '已连接' ? '在线' : connectionStatus }}
           </span>
         </div>
-        <button class="icon-btn" title="个人信息设置" @click="openSettings">⚙</button>
-        <button v-if="isAdmin" class="icon-btn admin-btn" title="管理员面板" @click="openAdminPanel">⚡</button>
-        <button class="icon-btn" title="退出登录" @click="logout">⏻</button>
+        <button class="icon-btn" title="个人信息设置" @click="openSettings"><SettingTwo size="18" /></button>
+        <button v-if="isAdmin" class="icon-btn admin-btn" title="管理员面板" @click="openAdminPanel"><Lightning size="18" /></button>
+        <button class="icon-btn" title="退出登录" @click="logout"><Logout size="18" /></button>
       </div>
       <div class="search-box"><input placeholder="搜索聊天对象..." disabled /></div>
       <div class="tab-bar">
-        <button :class="{ active: activeTab === 'groups' }" @click="switchTab('groups')">📢 群组</button>
-        <button :class="{ active: activeTab === 'privates' }" @click="switchTab('privates')">💬 私信</button>
+        <button :class="{ active: activeTab === 'groups' }" @click="switchTab('groups')"><Peoples size="15" /> 群组</button>
+        <button :class="{ active: activeTab === 'privates' }" @click="switchTab('privates')"><Message size="15" /> 私信</button>
       </div>
 
       <div v-show="activeTab === 'groups'" class="room-list">
@@ -1039,13 +1045,13 @@ function openAdminPanel() {
           <div class="room-avatar add-icon">+</div><span class="room-name">创建新群聊</span>
         </div>
         <div v-if="!isAdmin" class="room-item add-room" @click="showJoinGroup = true">
-          <div class="room-avatar add-icon">🔍</div><span class="room-name">加入群组</span>
+          <div class="room-avatar add-icon"><Search size="16" /></div><span class="room-name">加入群组</span>
         </div>
       </div>
 
       <div v-show="activeTab === 'privates'" class="room-list">
         <div v-if="!isAdmin && pendingRequests.length > 0" class="pending-bar" @click="showPendingPanel = !showPendingPanel">
-          📩 {{ pendingRequests.length }} 条好友申请
+          <Mail size="14" /> {{ pendingRequests.length }} 条好友申请
         </div>
         <div v-if="showPendingPanel && pendingRequests.length > 0" class="pending-panel">
           <div v-for="req in pendingRequests" :key="req.Id" class="pending-item">
@@ -1071,21 +1077,21 @@ function openAdminPanel() {
         </div>
       </div>
 
-      <div class="sidebar-footer"><router-link to="/" class="footer-link">← 返回首页</router-link></div>
+      <div class="sidebar-footer"><router-link to="/" class="footer-link"><Left size="14" /> 返回首页</router-link></div>
     </aside>
 
     <div class="main-area">
       <header class="top-toolbar">
         <h3 class="room-title">{{ roomTitle }}</h3>
         <div class="toolbar-actions">
-          <button v-if="currentRoom.type === 'group'" class="tool-btn" @click="showSettingsPanel = true; settingsPanelTab = currentRoom.id === 'public' ? 'announcement' : 'members'; loadMembers()">⚙</button>
+          <button v-if="currentRoom.type === 'group'" class="tool-btn" @click="showSettingsPanel = true; settingsPanelTab = currentRoom.id === 'public' ? 'announcement' : 'members'; loadMembers()"><SettingTwo size="16" /></button>
         </div>
       </header>
 
       <!-- 公告横幅 -->
       <div v-if="showAnnouncement && currentRoom.type === 'group'" class="announce-bar">
-        📢 {{ announcement }}
-        <button @click="showAnnouncement = false">✕</button>
+        <Announcement size="16" /> {{ announcement }}
+        <button @click="showAnnouncement = false"><Close size="14" /></button>
       </div>
 
       <div ref="messageList" class="message-list" @scroll="onMessageScroll">
@@ -1119,18 +1125,18 @@ function openAdminPanel() {
 
                 <!-- 音频：文件名 + 内联播放器 -->
                 <div v-else-if="mediaKind(msg) === 'audio' && msg.mediaUrl" class="media-audio">
-                  <div class="media-audio-name">🎵 {{ msg.mediaName }}</div>
+                  <div class="media-audio-name"><MusicOne size="14" /> {{ msg.mediaName }}</div>
                   <audio controls preload="metadata" :src="msg.mediaUrl"></audio>
                 </div>
 
                 <!-- 其他文件：卡片，点击下载 -->
                 <a v-else-if="msg.mediaUrl" class="media-file" :href="msg.mediaUrl" :download="msg.mediaName" target="_blank" rel="noopener">
-                  <span class="media-file-icon">{{ fileIcon(msg.mediaName) }}</span>
+                  <span class="media-file-icon"><component :is="fileIcon(msg.mediaName)" /></span>
                   <span class="media-file-info">
                     <span class="media-file-name">{{ msg.mediaName }}</span>
                     <span class="media-file-size">{{ fmtSize(msg.mediaSize) }}</span>
                   </span>
-                  <span class="media-file-dl">⬇</span>
+                  <span class="media-file-dl"><Download size="16" /></span>
                 </a>
 
                 <div v-else class="bubble-text">{{ msg.content }}</div>
@@ -1158,18 +1164,18 @@ function openAdminPanel() {
 
                 <!-- 音频：文件名 + 内联播放器 -->
                 <div v-else-if="mediaKind(msg) === 'audio' && msg.mediaUrl" class="media-audio">
-                  <div class="media-audio-name">🎵 {{ msg.mediaName }}</div>
+                  <div class="media-audio-name"><MusicOne size="14" /> {{ msg.mediaName }}</div>
                   <audio controls preload="metadata" :src="msg.mediaUrl"></audio>
                 </div>
 
                 <!-- 其他文件：卡片，点击下载 -->
                 <a v-else-if="msg.mediaUrl" class="media-file" :href="msg.mediaUrl" :download="msg.mediaName" target="_blank" rel="noopener">
-                  <span class="media-file-icon">{{ fileIcon(msg.mediaName) }}</span>
+                  <span class="media-file-icon"><component :is="fileIcon(msg.mediaName)" /></span>
                   <span class="media-file-info">
                     <span class="media-file-name">{{ msg.mediaName }}</span>
                     <span class="media-file-size">{{ fmtSize(msg.mediaSize) }}</span>
                   </span>
-                  <span class="media-file-dl">⬇</span>
+                  <span class="media-file-dl"><Download size="16" /></span>
                 </a>
 
                 <div v-else class="bubble-text">{{ msg.content }}</div>
@@ -1186,7 +1192,7 @@ function openAdminPanel() {
       </div>
 
       <div class="input-toolbar">
-        <button class="tool-icon-btn" title="发送文件（图片/视频/音频/文档）" @click="triggerImageInput">📎</button>
+        <button class="tool-icon-btn" title="发送文件（图片/视频/音频/文档）" @click="triggerImageInput"><Paperclip size="18" /></button>
         <input ref="imageFileInput" type="file"
           accept=".jpg,.jpeg,.png,.gif,.webp,.mp4,.webm,.mov,.mp3,.wav,.ogg,.m4a,.pdf,.zip,.7z,.rar,.txt,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
           style="display:none" @change="onImageSelected" />
@@ -1195,7 +1201,7 @@ function openAdminPanel() {
           <div class="upload-progress" :style="{ width: uploadProgress + '%' }"></div>
           <span class="upload-text">{{ uploadFileName }} · {{ Math.round(uploadProgress) }}%</span>
         </div>
-        <button v-if="uploading" class="tool-icon-btn" title="取消上传" @click="cancelUpload">✕</button>
+        <button v-if="uploading" class="tool-icon-btn" title="取消上传" @click="cancelUpload"><Close size="16" /></button>
       </div>
 
       <div class="chat-box">
@@ -1325,7 +1331,7 @@ function openAdminPanel() {
         <div v-show="settingsPanelTab === 'members'" class="panel-scroll">
           <div v-for="m in memberList" :key="m.UserId" class="member-row">
             <span>{{ m.Nickname }} <i v-if="m.Online" class="online-tag">在线</i>
-              <span style="color:#888;font-size:11px">{{ m.Role===0?'群主':m.Role===1?'管理':'成员' }} {{ m.IsMuted ? '🤫' : '' }}</span>
+              <span style="color:#888;font-size:11px;display:inline-flex;align-items:center;gap:4px">{{ m.Role===0?'群主':m.Role===1?'管理':'成员' }} <VolumeMute v-if="m.IsMuted" size="12" /></span>
             </span>
             <div v-if="(myGroupRole <= 1 || isAdmin) && m.UserId !== publicId" class="member-actions">
               <button v-if="myGroupRole === 0 && m.Role === 2" class="btn-accept" @click="doPromote(m.UserId, 1)">升管理</button>
@@ -1366,7 +1372,7 @@ function openAdminPanel() {
     <!-- ====== 管理员面板 ====== -->
     <div v-if="showAdminPanel" class="modal-overlay" @click.self="showAdminPanel = false">
       <div class="modal-box settings-box" style="width:520px">
-        <h3>⚡ 管理员面板</h3>
+        <h3><Lightning size="18" /> 管理员面板</h3>
         <div class="settings-tabs">
           <button :class="{ active: adminTab === 'users' }" @click="adminTab = 'users'; loadAdminUsers()">用户</button>
           <button :class="{ active: adminTab === 'groups' }" @click="adminTab = 'groups'; loadAdminGroups()">群组</button>
@@ -1586,4 +1592,16 @@ function openAdminPanel() {
   color: #333; font-size: 14px;
 }
 .member-actions { display: flex; gap: 4px; }
+
+/* ====== 图标对齐（IconPark SVG） ======
+   图标默认 size="1em"，尺寸跟随 font-size、颜色跟随 currentColor；
+   这里统一让「图标 + 文字」的容器用 flex 垂直居中，避免 svg 基线偏移。 */
+.icon-btn, .tool-icon-btn, .tool-btn { display: inline-flex; align-items: center; justify-content: center; line-height: 0; }
+.tab-bar button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
+.footer-link { display: inline-flex; align-items: center; gap: 4px; }
+.pending-bar { display: flex; align-items: center; gap: 6px; }
+h3 { display: flex; align-items: center; gap: 6px; }
+.media-file-icon { display: flex; align-items: center; line-height: 0; }
+.media-file-dl { display: flex; align-items: center; line-height: 0; }
+.media-audio-name { display: flex; align-items: center; gap: 5px; }
 </style>
