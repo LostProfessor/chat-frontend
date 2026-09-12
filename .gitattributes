@@ -1,0 +1,33 @@
+# ═══════════════════════════════════════════════════════════════
+#  行尾统一规则
+#  仓库里一律以 LF 存储（GitHub 友好），检出到 Windows 时自动转 CRLF。
+#  没有这个文件的话，同一个文件在不同机器上会产生「整文件 diff」，
+#  把真正的代码改动淹没掉。
+# ═══════════════════════════════════════════════════════════════
+* text=auto
+
+# Windows 脚本保持 CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# ── 二进制文件：禁止任何行尾/文本转换 ──
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.svg  text
+*.mp4  binary
+*.webm binary
+*.mp3  binary
+*.wav  binary
+*.zip  binary
+*.pdf  binary
+*.woff  binary
+*.woff2 binary
+
+# ── 锁文件 ──
+# -diff：不在 diff 里展开（体积大、无阅读价值），但仍正常提交
+package-lock.json text eol=lf -diff
