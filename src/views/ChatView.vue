@@ -52,6 +52,7 @@ const currentRoom = ref({ type: 'group', id: 'public', name: '全服大厅' })
 const messages = ref([])
 const groupList = ref([{ id: 'public', name: '全服大厅', unread: 0 }])
 const activeTab = ref('groups')
+const roomFilter = ref('')   // 侧边栏搜索关键词：只过滤本地已有的聊天对象，不请求后端
 
 // 群组弹窗
 const showCreateGroup = ref(false)
@@ -111,6 +112,28 @@ const showAddFriend = ref(false)
 const searchQuery = ref('')
 const searchResults = ref([])
 const showPendingPanel = ref(false)
+
+// ── 侧边栏搜索：只过滤本地已有的聊天对象（群组 / 好友），不请求后端 ──
+// 注意不要复用上面的 searchQuery —— 那个是「添加好友」面板在用的。
+const roomKeyword = computed(() => roomFilter.value.trim().toLowerCase())
+
+const filteredGroups = computed(() => {
+  if (!roomKeyword.value) return groupList.value
+  return groupList.value.filter(g => g.name.toLowerCase().includes(roomKeyword.value))
+})
+
+const filteredPrivates = computed(() => {
+  if (!roomKeyword.value) return privateList.value
+  return privateList.value.filter(c => c.name.toLowerCase().includes(roomKeyword.value))
+})
+
+/** 有搜索词、但当前标签页一个都没匹配上 → 显示「无匹配」提示 */
+const roomSearchMiss = computed(() => {
+  if (!roomKeyword.value) return false
+  return activeTab.value === 'groups'
+    ? filteredGroups.value.length === 0
+    : filteredPrivates.value.length === 0
+})
 
 // 个人信息设置弹窗
 const showSettings = ref(false)
@@ -1104,23 +1127,31 @@ function openAdminPanel() {
         <button v-if="isAdmin" class="icon-btn admin-btn" title="管理员面板" @click="openAdminPanel"><Lightning size="18" /></button>
         <button class="icon-btn" title="退出登录" @click="logout"><Logout size="18" /></button>
       </div>
-      <div class="search-box"><input placeholder="搜索聊天对象..." disabled /></div>
+      <div class="search-box">
+        <Search size="14" class="search-icon" />
+        <input v-model="roomFilter" placeholder="搜索聊天对象..." />
+        <button v-if="roomFilter" class="search-clear" title="清空搜索" @click="roomFilter = ''">
+          <Close size="12" />
+        </button>
+      </div>
       <div class="tab-bar">
         <button :class="{ active: activeTab === 'groups' }" @click="switchTab('groups')"><Peoples size="15" /> 群组</button>
         <button :class="{ active: activeTab === 'privates' }" @click="switchTab('privates')"><Message size="15" /> 私信</button>
       </div>
 
       <div v-show="activeTab === 'groups'" class="room-list">
-        <div v-for="group in groupList" :key="group.id"
+        <p v-if="roomSearchMiss" class="empty-hint">没有匹配的群组</p>
+        <div v-for="group in filteredGroups" :key="group.id"
           class="room-item" :class="{ active: currentRoom.type === 'group' && currentRoom.id === group.id }"
           @click="switchToRoom('group', group.id, group.name)">
           <div class="room-avatar">#</div>
           <div class="room-info"><span class="room-name">{{ group.name }}</span></div>
         </div>
-        <div v-if="!isAdmin" class="room-item add-room" @click="showCreateGroup = true">
+        <!-- 搜索时隐藏「创建/加入」入口：它们不是聊天对象，留着会让人以为过滤没生效 -->
+        <div v-if="!isAdmin && !roomKeyword" class="room-item add-room" @click="showCreateGroup = true">
           <div class="room-avatar add-icon">+</div><span class="room-name">创建新群聊</span>
         </div>
-        <div v-if="!isAdmin" class="room-item add-room" @click="showJoinGroup = true">
+        <div v-if="!isAdmin && !roomKeyword" class="room-item add-room" @click="showJoinGroup = true">
           <div class="room-avatar add-icon"><Search size="16" /></div><span class="room-name">加入群组</span>
         </div>
       </div>
@@ -1138,8 +1169,9 @@ function openAdminPanel() {
             </div>
           </div>
         </div>
-        <p v-if="privateList.length === 0 && pendingRequests.length === 0" class="empty-hint">暂无好友</p>
-        <div v-for="chat in privateList" :key="chat.id"
+        <p v-if="roomSearchMiss" class="empty-hint">没有匹配的好友</p>
+        <p v-else-if="privateList.length === 0 && pendingRequests.length === 0" class="empty-hint">暂无好友</p>
+        <div v-for="chat in filteredPrivates" :key="chat.id"
           class="room-item" :class="{ active: currentRoom.type === 'private' && currentRoom.id === chat.id }"
           @click="switchToRoom('private', chat.id, chat.name)">
           <div class="room-avatar private-avatar" :style="{ background: chat.online ? '#4caf50' : '#888' }">{{ chat.name.charAt(0) }}</div>
@@ -1148,7 +1180,7 @@ function openAdminPanel() {
             <span class="room-status" :class="{ online: chat.online }">{{ chat.online ? '在线' : '离线' }}</span>
           </div>
         </div>
-        <div v-if="!isAdmin" class="room-item add-room" @click="showAddFriend = true">
+        <div v-if="!isAdmin && !roomKeyword" class="room-item add-room" @click="showAddFriend = true">
           <div class="room-avatar add-icon">+</div><span class="room-name">添加好友</span>
         </div>
       </div>
@@ -1508,8 +1540,13 @@ function openAdminPanel() {
 .icon-btn:hover { color: #e74c3c; }
 .admin-btn { color: #f0a500; }
 .admin-btn:hover { color: #e67e22; }
-.search-box { padding: 12px 16px; }
-.search-box input { width: 100%; padding: 8px 12px; background: #1e1e28; border: none; border-radius: 4px; color: #ccc; font-size: 13px; outline: none; box-sizing: border-box; }
+.search-box { padding: 12px 16px; position: relative; }
+.search-box .search-icon { position: absolute; left: 28px; top: 50%; transform: translateY(-50%); color: #666; pointer-events: none; }
+.search-box input { width: 100%; padding: 8px 30px 8px 32px; background: #1e1e28; border: 1px solid transparent; border-radius: 4px; color: #ccc; font-size: 13px; outline: none; box-sizing: border-box; transition: border-color 0.15s; }
+.search-box input::placeholder { color: #666; }
+.search-box input:focus { border-color: #667eea; }
+.search-clear { position: absolute; right: 24px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; border: none; border-radius: 50%; background: #4a4a5e; color: #ccc; cursor: pointer; }
+.search-clear:hover { background: #667eea; color: #fff; }
 .tab-bar { display: flex; padding: 0 16px; gap: 4px; margin-bottom: 8px; }
 .tab-bar button { flex: 1; padding: 8px 0; background: none; border: none; color: #999; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; }
 .tab-bar button.active { color: #667eea; border-bottom-color: #667eea; }
