@@ -43,3 +43,12 @@ __screenshots__/
 testfiles/
 # oldtoken.txt 里是真实 JWT，绝不能提交
 oldtoken.txt
+
+# ── 一次性调试脚本 ──
+# 这三个是当时排查具体问题时写的临时工具（recall-* 验证撤回链路、
+# ws-raw-probe 用裸 TCP 复现握手丢头 bug），只在本地保留以便复查，
+# 不作为项目的一部分发布。
+# ws-smoke-test.mjs 不在此列 —— 它是可复用的 6 项端到端集成测试，需要入库。
+recall-step.mjs
+recall-test.mjs
+ws-raw-probe.mjs
