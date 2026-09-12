@@ -6,7 +6,7 @@ import api, {
   getFriends, getPendingRequests, acceptFriendRequest, rejectFriendRequest,
   changeNickname, changeEmail, changePassword,
   getProfile, uploadAvatar, deleteAvatar,
-  refreshAccessToken,
+  refreshAccessToken, probeAuth, redirectToLogin,
   createGroup, getMyGroups, searchGroups, joinGroup,
   getGroupMembers, getAnnouncement, setAnnouncement,
   changeRole, removeMember, getGroupHistory, updateGroupSettings,
@@ -518,9 +518,9 @@ function connectWebSocket() {
   socket.binaryType = 'arraybuffer' // 二进制帧以 ArrayBuffer 接收（文件传输）
 
   socket.onopen = () => {
-    // 连上了：清零重连计数与退避定时器，并标记“成功连上过”
-    everOpened = true
+    // 连上了：清零重连计数、鉴权失败计数与退避定时器
     reconnectAttempts = 0
+    authFailStreak = 0
     clearReconnectTimer()
     connectionStatus.value = '已连接'
     // 断线重连后：若存在未完成的上传（sessionId 已分配），从断点续传
@@ -625,14 +625,21 @@ function connectWebSocket() {
 //   2. 旧版 MAX_RECONNECT = 3，试三次就永久放弃，只能整页刷新才能恢复。
 //   3. 没有任何退避，后端没起来时会疯狂重试刷日志。
 //
-// 新策略：直接拿现有 token 重连；只有“从未成功连上过”（疑似鉴权失败）才先尝试续期；
-//        失败则指数退避后继续，不设次数上限；用户也可点击状态文字手动重连。
+// 新策略：直接拿现有 token 重连，指数退避、不设次数上限；用户也可点击状态文字手动重连。
+//        关键改进：每次重试前先用 HTTP 探针判定失败原因，据此决定「继续重试」还是「回登录页」。
+//
+//   ★ 为何必须靠 HTTP 探针：浏览器原生 WebSocket 在握手失败时不暴露任何原因，
+//     「后端没起来」和「token 无效」拿到的都是 onclose(code=1006, reason='')。
+//     只凭 WS 回调根本分不清该重试还是该重新登录 —— 早先靠 `!everOpened` 猜测就是错在这里：
+//     token 失效时它会无限空转（因为页面之前成功连上过），
+//     而后端一抖动它又会去调 refresh，把人误踢回登录页。
 let reconnectAttempts = 0
 let reconnectTimer = null
-let everOpened = false        // 本轮重连中是否成功连上过（区分“网络断了”和“鉴权失败”）
 let manuallyClosed = false    // 主动退出/离开页面
+let authFailStreak = 0        // 连续「探针确认 token 无效」的次数
 const RECONNECT_BASE_MS = 1000
 const RECONNECT_MAX_MS = 30000
+const MAX_AUTH_FAILURES = 3   // 连续确认 N 次才判定真失效，避免把偶发窗口误判成登出
 
 function clearReconnectTimer() {
   if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
@@ -642,6 +649,7 @@ function clearReconnectTimer() {
 function stopReconnect() {
   manuallyClosed = true
   clearReconnectTimer()
+  authFailStreak = 0
 }
 
 /** 调度下一次重连（指数退避：1s → 2s → 4s …… 上限 30s） */
@@ -652,15 +660,38 @@ function scheduleReconnect() {
   clearReconnectTimer()
   const delay = Math.min(RECONNECT_BASE_MS * 2 ** reconnectAttempts, RECONNECT_MAX_MS)
   reconnectAttempts++
-  connectionStatus.value = `已断开，${Math.round(delay / 1000)}s 后重连`
+  const seconds = Math.round(delay / 1000)
+  connectionStatus.value = `已断开，${seconds}s 后重连`
 
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null
-    // 从未成功连上过 → 可能是 access token 失效，先试着续期
-    // （续期失败也继续退避重试，绝不放弃；axios 拦截器会处理 HTTP 侧的 401）
-    if (!everOpened && reconnectAttempts <= 3) {
-      await refreshAccessToken().catch(() => null)
+
+    // ★ 重试前先判定失败原因（原因见上方变量注释）
+    const verdict = await probeAuth()
+    if (manuallyClosed) return       // 探针等待期间用户可能已主动退出
+
+    if (verdict === 'unauthorized') {
+      authFailStreak++
+      if (authFailStreak >= MAX_AUTH_FAILURES) {
+        // 连续多次确认 token 无效 → 不再空转，回登录页
+        connectionStatus.value = '登录已过期，请重新登录'
+        stopReconnect()
+        redirectToLogin()            // 内部会清理 sessionStorage 并跳转
+        return
+      }
+      // 未到阈值：先尝试续期（refresh 确认失效时其内部会跳登录页）
+      await refreshAccessToken()
+      if (manuallyClosed) return
+    } else {
+      // 'ok'      → token 正常，WS 连不上是网络/端口问题
+      // 'offline' → 后端不可达，与鉴权无关
+      // 两者都绝不能登出，继续退避重试即可
+      authFailStreak = 0
+      if (verdict === 'offline') {
+        connectionStatus.value = `后端未响应，${seconds}s 后重试`
+      }
     }
+
     connectWebSocket()
   }, delay)
 }
@@ -670,7 +701,7 @@ function manualReconnect() {
   if (connectionStatus.value === '已连接') return
   manuallyClosed = false
   reconnectAttempts = 0
-  everOpened = false
+  authFailStreak = 0
   clearReconnectTimer()
   connectionStatus.value = '正在重连...'
   connectWebSocket()

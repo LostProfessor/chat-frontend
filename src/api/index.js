@@ -18,7 +18,7 @@ api.interceptors.request.use(config => {
 // ====== access token 自动续期（Refresh Token 机制） ======
 
 /** 清理登录状态并跳回登录页 */
-function redirectToLogin() {
+export function redirectToLogin() {
   sessionStorage.removeItem('token')
   sessionStorage.removeItem('refreshToken')
   sessionStorage.removeItem('publicId')
@@ -75,10 +75,52 @@ export async function refreshAccessToken() {
       sessionStorage.setItem('refreshToken', res.data.refreshToken)
       return res.data.token
     })
-    .catch(() => { redirectToLogin(); return null })
+    .catch(err => {
+      const status = err.response?.status
+      // ★ 只有明确收到 401/403 才判定 refresh token 真失效并登出。
+      //   网络错误/超时不能登出 —— 否则后端一抖动就把用户踢到登录页，
+      //   由调用方（WS 重连循环等）继续退避重试即可。
+      if (status === 401 || status === 403) {
+        redirectToLogin()
+      }
+      return null
+    })
     .finally(() => { refreshing = null })
 
   return refreshing
+}
+
+/**
+ * 鉴权探针：用当前 access token 打一个受保护接口，判断它是否仍然有效。
+ *
+ * ★ 为什么需要它：浏览器原生 WebSocket 在握手失败时不暴露任何原因 ——
+ *   「后端根本没起来」和「token 无效」拿到的都是 onclose(code=1006, reason='')。
+ *   光凭 WS 回调无法决定该「继续重试」还是该「跳登录页」。
+ *   HTTP 层能给出明确状态码，所以用 HTTP 探针来区分。
+ *
+ * 必须用裸 axios，不能走上面的 api 实例 —— 否则 401 会被拦截器自动续期并吞掉，
+ * 我们就拿不到真相了。
+ *
+ * @returns {Promise<'ok'|'unauthorized'|'offline'>}
+ *   'ok'            token 有效
+ *   'unauthorized'  token 确定无效（401/403）
+ *   'offline'       后端不可达 / 超时 —— 与鉴权无关，不可据此登出
+ */
+export async function probeAuth() {
+  const token = sessionStorage.getItem('token')
+  if (!token) return 'unauthorized'
+
+  try {
+    await axios.get(`${API_BASE_URL}/api/user/profile`, {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 3000,
+    })
+    return 'ok'
+  } catch (err) {
+    const status = err.response?.status
+    if (status === 401 || status === 403) return 'unauthorized'
+    return 'offline'
+  }
 }
 
 export function register(nickname, email, password) {
