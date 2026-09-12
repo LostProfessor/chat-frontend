@@ -518,6 +518,10 @@ function connectWebSocket() {
   socket.binaryType = 'arraybuffer' // 二进制帧以 ArrayBuffer 接收（文件传输）
 
   socket.onopen = () => {
+    // 连上了：清零重连计数与退避定时器，并标记“成功连上过”
+    everOpened = true
+    reconnectAttempts = 0
+    clearReconnectTimer()
     connectionStatus.value = '已连接'
     // 断线重连后：若存在未完成的上传（sessionId 已分配），从断点续传
     if (pendingUpload && pendingUpload.sessionId !== 0) {
@@ -606,31 +610,70 @@ function connectWebSocket() {
   }
   socket.onerror = () => { connectionStatus.value = '连接失败' }
   socket.onclose = () => {
+    // 主动退出/离开页面时不重连
+    if (manuallyClosed) { connectionStatus.value = '已退出'; return }
     connectionStatus.value = '已断开'
-    // access token 过期会导致 WS 断开，尝试用 refresh token 重连
-    tryReconnect()
+    scheduleReconnect()
   }
 }
 
-// ====== WebSocket 自动重连（access token 过期场景） ======
+// ====== WebSocket 自动重连 ======
+//
+// 设计要点（旧实现有三个坑）：
+//   1. 旧版把“重连”绑在 refreshAccessToken() 上。但 WS 断开绝大多数是网络抖动、
+//      后端重启造成的，跟 token 无关；refresh 一失败就判定“没救了”，就地阵亡。
+//   2. 旧版 MAX_RECONNECT = 3，试三次就永久放弃，只能整页刷新才能恢复。
+//   3. 没有任何退避，后端没起来时会疯狂重试刷日志。
+//
+// 新策略：直接拿现有 token 重连；只有“从未成功连上过”（疑似鉴权失败）才先尝试续期；
+//        失败则指数退避后继续，不设次数上限；用户也可点击状态文字手动重连。
 let reconnectAttempts = 0
-const MAX_RECONNECT = 3
+let reconnectTimer = null
+let everOpened = false        // 本轮重连中是否成功连上过（区分“网络断了”和“鉴权失败”）
+let manuallyClosed = false    // 主动退出/离开页面
+const RECONNECT_BASE_MS = 1000
+const RECONNECT_MAX_MS = 30000
 
-async function tryReconnect() {
-  // 未登录或已主动退出时不重连
-  if (!sessionStorage.getItem('refreshToken')) return
-  if (reconnectAttempts >= MAX_RECONNECT) { connectionStatus.value = '连接已断开'; return }
+function clearReconnectTimer() {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
+}
 
+/** 停掉自动重连（退出登录、离开页面时调用） */
+function stopReconnect() {
+  manuallyClosed = true
+  clearReconnectTimer()
+}
+
+/** 调度下一次重连（指数退避：1s → 2s → 4s …… 上限 30s） */
+function scheduleReconnect() {
+  if (manuallyClosed) return
+  if (!sessionStorage.getItem('token')) { connectionStatus.value = '未登录'; return }
+
+  clearReconnectTimer()
+  const delay = Math.min(RECONNECT_BASE_MS * 2 ** reconnectAttempts, RECONNECT_MAX_MS)
   reconnectAttempts++
+  connectionStatus.value = `已断开，${Math.round(delay / 1000)}s 后重连`
+
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null
+    // 从未成功连上过 → 可能是 access token 失效，先试着续期
+    // （续期失败也继续退避重试，绝不放弃；axios 拦截器会处理 HTTP 侧的 401）
+    if (!everOpened && reconnectAttempts <= 3) {
+      await refreshAccessToken().catch(() => null)
+    }
+    connectWebSocket()
+  }, delay)
+}
+
+/** 手动重连（点击侧边栏的连接状态文字） */
+function manualReconnect() {
+  if (connectionStatus.value === '已连接') return
+  manuallyClosed = false
+  reconnectAttempts = 0
+  everOpened = false
+  clearReconnectTimer()
   connectionStatus.value = '正在重连...'
-  const newToken = await refreshAccessToken()
-  if (newToken) {
-    reconnectAttempts = 0
-    connectionStatus.value = '已连接'
-    connectWebSocket()  // connectWebSocket 会读取 sessionStorage 里的新 token
-  } else {
-    connectionStatus.value = '连接已断开'
-  }
+  connectWebSocket()
 }
 
 function sendMessage() {
@@ -752,7 +795,7 @@ function onMessageScroll() {
 }
 
 function logout() {
-  reconnectAttempts = 99 // 阻止 onclose 触发自动重连
+  stopReconnect() // 主动退出：停掉自动重连
   if (socket) socket.close()
   sessionStorage.removeItem('token')
   sessionStorage.removeItem('refreshToken')
@@ -951,7 +994,7 @@ async function doChangePassword() {
 }
 
 onMounted(() => { connectWebSocket(); loadMyAvatar(); loadFriends(); loadPending(); loadGroups(); loadAnnouncement('public'); loadHistory('public') })
-onBeforeUnmount(() => { if (socket) socket.close() })
+onBeforeUnmount(() => { stopReconnect(); if (socket) socket.close() })
 
 // ====== 管理员功能 ======
 
@@ -1020,7 +1063,9 @@ function openAdminPanel() {
         </div>
         <div class="user-detail">
           <span class="user-name">{{ nickname }}</span>
-          <span class="user-status" :class="{ online: connectionStatus === '已连接' }">
+          <span class="user-status" :class="{ online: connectionStatus === '已连接', clickable: connectionStatus !== '已连接' }"
+            :title="connectionStatus === '已连接' ? '' : '连接已断开，点击立即重连'"
+            @click="manualReconnect">
             {{ connectionStatus === '已连接' ? '在线' : connectionStatus }}
           </span>
         </div>
@@ -1425,6 +1470,9 @@ function openAdminPanel() {
 .user-name { color: #fff; font-size: 15px; font-weight: 600; }
 .user-status { font-size: 12px; color: #888; }
 .user-status.online { color: #4caf50; }
+/* 未连接时：可点击手动重连 */
+.user-status.clickable { cursor: pointer; text-decoration: underline dotted; }
+.user-status.clickable:hover { color: #f0a500; }
 .icon-btn { background: none; border: none; color: #999; font-size: 18px; cursor: pointer; padding: 4px; }
 .icon-btn:hover { color: #e74c3c; }
 .admin-btn { color: #f0a500; }
