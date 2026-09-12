@@ -133,6 +133,7 @@ function probe(token, framesToSend, { settleMs = SETTLE_MS } = {}) {
         ? closeFrame.payload.subarray(2).toString('utf8') : ''
       resolve({
         opcodes: frames.map((f) => '0x' + f.opcode.toString(16)),
+        texts: frames.filter((f) => f.opcode === 0x1).map((f) => f.payload.toString('utf8')),
         closeCode,
         closeReason,
         tcpClosed,
@@ -213,11 +214,12 @@ const TLS = (obj) => JSON.stringify({ type: 'group', groupId: 'public', content:
     `closeCode=${r.closeCode} reason="${r.closeReason}"`)
 }
 
-// 9. 分片数据帧 FIN=0
+// 9. 分片起始帧（FIN=0）本身是合法的 —— 连接必须保持打开，不能被当成协议错误
+//    （早期一版曾错误地拒绝分片，导致浏览器上传全部失败、进度永远 0%）
 {
   const r = await probe(token, [clientFrame({ opcode: 0x1, fin: false, payload: Buffer.from('x') })])
-  check('分片数据帧 FIN=0 被拒（1002）', r.closeCode === 1002,
-    `closeCode=${r.closeCode} reason="${r.closeReason}"`)
+  check('分片起始帧 FIN=0 被接受（不断开）', r.closeCode === null,
+    `closeCode=${r.closeCode} 服务端帧=${JSON.stringify(r.opcodes)}`)
 }
 
 // 10. 客户端帧未加掩码
@@ -246,6 +248,99 @@ const TLS = (obj) => JSON.stringify({ type: 'group', groupId: 'public', content:
   const r = await probe(token, [clientFrame({ opcode: 0x8, payload: Buffer.from([0x03, 0xe8]) })])
   check('正常关闭握手回 Close(1000)', r.closeCode === 1000 && r.tcpClosed,
     `closeCode=${r.closeCode} tcpClosed=${r.tcpClosed}`)
+}
+
+// ═══════ 分片消息 ═══════
+//
+// ★ 为什么这几项最重要：浏览器的 WebSocket 会对较大的消息自动分片。
+//   实测 Chrome 阈值：≤ 65536 B 单帧，≥ 131072 B 就分片。
+//   而本项目的文件分块是 256 KB —— 所以「浏览器上传」时**每一块都会被分片**，
+//   这是主路径而不是边缘情况。曾经有一段代码因为「浏览器永远发 FIN=1」
+//   这个错误假设而拒绝了分片，结果浏览器端上传 100% 失败（进度永远 0%、
+//   连接反复断开），而下面这些用 Node 手写单帧的测试却全部通过。
+
+// 14. ★ 合法分片：Text 消息拆成 3 帧，服务端必须重组后正常处理
+{
+  const marker = '分片重组-' + Date.now()
+  const b = Buffer.from(JSON.stringify({ type: 'group', groupId: 'public', content: marker }))
+  const c1 = Math.floor(b.length / 3), c2 = Math.floor(b.length * 2 / 3)
+  const r = await probe(token, [
+    clientFrame({ opcode: 0x1, fin: false, payload: b.subarray(0, c1) }),
+    clientFrame({ opcode: 0x0, fin: false, payload: b.subarray(c1, c2) }),
+    clientFrame({ opcode: 0x0, fin: true, payload: b.subarray(c2) }),
+  ])
+  // 注意：服务端 JSON 序列化默认会把非 ASCII 转义成 \uXXXX，
+  // 所以不能对原始文本做子串匹配，必须解析 JSON 后比较字段
+  const echoed = r.texts.some((t) => {
+    try { return JSON.parse(t).Content === marker } catch { return false }
+  })
+  check('★ 分片 Text 消息被正确重组并处理', echoed && r.closeCode === null,
+    `重组后内容匹配=${echoed} closeCode=${r.closeCode} 收到文本帧数=${r.texts.length}`)
+}
+
+// 15. ★ 完全模仿 Chrome：Binary 按 64KB 分片，总量 = 一个 256KB 分块帧的大小
+{
+  const total = 262154
+  const per = 65536
+  const frames = []
+  for (let off = 0; off < total; off += per) {
+    const len = Math.min(per, total - off)
+    frames.push(clientFrame({
+      opcode: off === 0 ? 0x2 : 0x0,
+      fin: off + len >= total,
+      payload: Buffer.alloc(len),
+    }))
+  }
+  const r = await probe(token, frames)
+  // 这不是合法的 FT 帧，服务端会回 Error 帧；关键是帧层不应把它当协议错误断开
+  check('★ 模仿 Chrome 的 64KB 分片 Binary 被接受', r.closeCode === null,
+    `帧数=${frames.length} closeCode=${r.closeCode} 服务端帧=${JSON.stringify(r.opcodes)}`)
+}
+
+// 16. 分片中间插入 Ping（RFC 允许控制帧插在分片之间）: 应回 Pong 且消息仍能重组
+{
+  const marker = '分片插Ping-' + Date.now()
+  const b = Buffer.from(JSON.stringify({ type: 'group', groupId: 'public', content: marker }))
+  const cut = Math.floor(b.length / 2)
+  const r = await probe(token, [
+    clientFrame({ opcode: 0x1, fin: false, payload: b.subarray(0, cut) }),
+    clientFrame({ opcode: 0x9, payload: Buffer.from('mid') }),
+    clientFrame({ opcode: 0x0, fin: true, payload: b.subarray(cut) }),
+  ])
+  const pong = r.opcodes.includes('0xa')
+  const echoed = r.texts.some((t) => {
+    try { return JSON.parse(t).Content === marker } catch { return false }
+  })
+  check('分片中间插入 Ping 仍能正确重组（并回 Pong）', pong && echoed && r.closeCode === null,
+    `回Pong=${pong} 内容匹配=${echoed} closeCode=${r.closeCode}`)
+}
+
+// 17. 没有起始帧就来续帧 → 1002
+{
+  const r = await probe(token, [clientFrame({ opcode: 0x0, fin: true, payload: Buffer.from('x') })])
+  check('无起始帧的续帧被拒（1002）', r.closeCode === 1002,
+    `closeCode=${r.closeCode} reason="${r.closeReason}"`)
+}
+
+// 18. 分片未完又来新的 Text → 1002
+{
+  const r = await probe(token, [
+    clientFrame({ opcode: 0x1, fin: false, payload: Buffer.from('abc') }),
+    clientFrame({ opcode: 0x1, fin: true, payload: Buffer.from('def') }),
+  ])
+  check('分片未完又来新 Text 被拒（1002）', r.closeCode === 1002,
+    `closeCode=${r.closeCode} reason="${r.closeReason}"`)
+}
+
+// 19. 分片累计超过 1MB → 1009（每一单帧都在限内，靠累计上限拦住）
+{
+  const frames = [clientFrame({ opcode: 0x2, fin: false, payload: Buffer.alloc(524288) })]
+  for (let i = 0; i < 4; i++)
+    frames.push(clientFrame({ opcode: 0x0, fin: false, payload: Buffer.alloc(262144) }))
+  frames.push(clientFrame({ opcode: 0x0, fin: true, payload: Buffer.alloc(1024) }))
+  const r = await probe(token, frames)
+  check('分片累计超 1MB 被拒（1009）', r.closeCode === 1009,
+    `closeCode=${r.closeCode} reason="${r.closeReason}"`)
 }
 
 // ─────────────────────────── 汇总 ───────────────────────────
